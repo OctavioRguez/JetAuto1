@@ -1,5 +1,4 @@
 #!/usr/bin/python
-import os
 import socket
 import time
 import numpy as np
@@ -32,9 +31,15 @@ class control:
         self.angles = {"1":0.0, "2":0.0, "3":0.0}
 
         # Robot 1, Robot 2 and Virtual leader states
-        self.x1, self.y1, self.theta1 = 3, 0, 0
-        self.x2, self.y2, self.theta2 = 1, 0, 0
-        self.xv, self.yv, self.thetav = 2, 0, 0
+        self.x1, self.y1, self.theta1 = 3.0, 0.0, 0.0
+        self.x2, self.y2, self.theta2 = 1.0, 0.0, 0.0
+        self.xv, self.yv, self.thetav = 2.0, 0.0, 0.0
+
+        self.vx1, self.vy1 = 0.0, 0.0
+        self.vx2, self.vy2 = 0.0, 0.0
+        self.vx1Past, self.vy1Past = 0.0, 0.0
+        self.vx2Past, self.vy2Past = 0.0, 0.0
+        self.pixelsToMeters = 1
 
         # Control constants
         self.kp = {"kx":0.5, "ky":0.5, "kr":0.5}
@@ -43,10 +48,11 @@ class control:
 
         # Desired states (references)
         self.d_d = 0.5
-        self.xd, self.yd, self.thetad = 4, 4, -np.pi/2
+        self.xd, self.yd, self.thetad = -5, 4, np.pi/2
 
         # Flag for start the simulation
         self.simulate = False
+        self.filter = False # For apply filter
 
     # Function for start camera with desired parameters
     def camera_parameters(self) -> None:
@@ -99,7 +105,7 @@ class control:
         for tag in tags:
             center, id, corners = tag.center, tag.tag_id, tag.corners
 
-            # X and y of the center
+            # X and Y of the center
             center = (int(center[0]), int(center[1]))
             # Get angle for current tag
             corner1, corner2 = (int(corners[0][0]), int(corners[0][1])), (int(corners[1][0]), int(corners[1][1]))
@@ -107,8 +113,8 @@ class control:
             angulo = np.arctan2(CO, CA)
 
             # Save states feedback from current tag
-            pixelsToMeters = 5.5 / (100*np.sqrt(CA**2 + CO**2))
-            self.centers[str(id)] = [pixelsToMeters*(center[0] - width//2), -pixelsToMeters*(center[1] - height//2)]
+            self.pixelsToMeters = 5.5 / (100*np.sqrt(CA**2 + CO**2))
+            self.centers[str(id)] = [self.pixelsToMeters*(center[0] - width//2), -self.pixelsToMeters*(center[1] - height//2)]
             self.angles[str(id)] = angulo
             cv.circle(debug_image, (center[0], center[1]), 3, RED, 2) # Center
             cv.putText(debug_image, f"X = {self.centers[str(id)][0]:.3f}", (center[0]+10, center[1]+15), 
@@ -117,20 +123,96 @@ class control:
                        cv.FONT_HERSHEY_SIMPLEX, 0.5, BLUE, 2, cv.LINE_AA) # Y
             cv.putText(debug_image, f"Theta = {angulo:.3f}", (center[0]+10, center[1]-15), 
                        cv.FONT_HERSHEY_SIMPLEX, 0.5, BLUE, 2, cv.LINE_AA) # Angle
-        cv.imshow("Camera", debug_image) # Display frame
 
         # Control states feedback 
-        # self.x1, self.y1, self.theta1 = self.centers["1"][0], self.centers["1"][1], self.angles["1"]
-        # self.x2, self.y2, self.theta2 = self.centers["2"][0], self.centers["2"][1], self.angles["2"]
-        # self.xd, self.yd, self.thetad = self.centers["3"][0], self.centers["3"][1], self.angles["3"]
-        # if not self.start:
-        #     self.xv, self.yv = (self.x1 + self.x2)/2, (self.y1 + self.y2)/2
+        self.vx1, self.vy1 = self.x1-self.centers["1"][0], self.y1-self.centers["1"][1]
+        self.x1, self.y1, self.theta1 = self.centers["1"][0], self.centers["1"][1], self.angles["1"] # Robot 1
+        debug_image = self.applyKalman(0, width, height, debug_image) # Filter for robot 1
 
-        # Print control states
-        # print(f"X1 = {self.x1:.3f},  Y1 = {self.y1:.3f},  Theta1 = {self.theta1:.3f}\n")
-        # print(f"X2 = {self.x2:.3f},  Y2 = {self.y2:.3f},  Theta2 = {self.theta2:.3f}\n")
-        # print(f"Xv = {self.xv:.3f},  Yv = {self.yv:.3f},  Thetav = {self.thetav:.3f}\n")
-        # print(f"Xd = {self.xd:.3f},  Yd = {self.yd:.3f},  Thetad = {self.thetad:.3f}\n")
+        self.vx2, self.vy2 = self.x2-self.centers["2"][0], self.y2-self.centers["2"][1]
+        self.x2, self.y2, self.theta2 = self.centers["2"][0], self.centers["2"][1], self.angles["2"] # Robot 2
+        debug_image = self.applyKalman(1, width, height, debug_image) # Filter for robot 2
+
+        # self.xd, self.yd, self.thetad = self.centers["3"][0], self.centers["3"][1], self.angles["3"] # Desired position
+        # if not self.start:
+        #     self.xv, self.yv = (self.x1 + self.x2)/2, (self.y1 + self.y2)/2 # Virtual lider
+        cv.imshow("Camera", debug_image) # Display frame
+
+    # Function for initialize variables used for the Kalman Filter
+    def startKalmanFilter(self, std_u : float, x_std : float, y_std : float, dt : float) -> None:
+        # Intial States
+        self.pos = [np.matrix([[self.x1], [self.y1], [self.vx1], [self.vy1]]), np.matrix([[self.x2], [self.y2], [self.vx2], [self.vy2]])]
+
+        # State Transition Matrix A
+        self.A = np.matrix([[1, 0, dt, 0],
+                            [0, 1, 0, dt],
+                            [0, 0, 1, 0],
+                            [0, 0, 0, 1]])
+
+        # Control Input Matrix B
+        self.B = np.matrix([[(dt**2)/2, 0],
+                            [0, (dt**2)/2],
+                            [dt, 0],
+                            [0, dt]])
+
+        # Measurement Mapping Matrix
+        self.H = np.matrix([[1, 0, 0, 0],
+                            [0, 1, 0, 0]])
+
+        # Initial Process Noise Covariance
+        self.Q = np.matrix([[(dt**4)/4, 0, (dt**3)/2, 0],
+                            [0, (dt**4)/4, 0, (dt**3)/2],
+                            [(dt**3)/2, 0, dt**2, 0],
+                            [0, (dt**3)/2, 0, dt**2]]) * std_u**2
+
+        # Initial Measurement Noise Covariance
+        self.R = np.matrix([[x_std**2, 0],
+                           [0, y_std**2]])
+
+        # Initial Covariance Matrix
+        self.P = [np.eye(self.A.shape[1]), np.eye(self.A.shape[1])]
+        self.filter = True # Flag for start calculating the filter
+
+    # Function for the states prediction (n=0:robot1, n=1:robot2)
+    def kalmanPredict(self, u : list[list[float]], n : int) -> list[float]:
+        self.pos[n] = np.dot(self.A, self.pos[n]) + np.dot(self.B, u) # Predict positon
+
+        # Covariance Error
+        self.P[n] = np.dot(np.dot(self.A, self.P[n]), self.A.T) + self.Q
+        return self.pos[n][0:2] # Return only the position
+
+    # Function for the states correction (n=0:robot1, n=1:robot2)
+    def kalmanUpdate(self, currPos : list[list[float]], n : int) -> list[float]:
+        # Residual covariance
+        s = np.dot(self.H, np.dot(self.P[n], self.H.T)) + self.R
+
+        # Kalman gain control
+        k = np.dot(np.dot(self.P[n], self.H.T), np.linalg.inv(s))
+        self.pos[n] = self.pos[n] + np.dot(k, (currPos - np.dot(self.H, self.pos[n]))) # Correct position
+
+        # Update Covariance Matrix
+        i = np.eye(self.H.shape[1])
+        self.P[n] = (i - (k * self.H)) * self.P[n]
+        return self.pos[n][0:2] # Return only the position
+
+    # Function for apply the kalman filter (n=0:robot1, n=1:robot2)
+    def applyKalman(self, n : int, width : int, height : int, img):
+        if (self.filter): # If filter was initializated
+            if n: # Robot 2
+                u = np.matrix([[self.vx2-self.vx2Past],[self.vy2-self.vy2Past]])
+                self.vx2Past, self.vy2Past = self.vx2, self.vy2
+            else: # Robot 1
+                u = np.matrix([[self.vx1-self.vx1Past],[self.vy1-self.vy1Past]])
+                self.vx1Past, self.vy1Past = self.vx1, self.vy1
+
+            # Predict
+            (xPred, yPred) = self.kalmanPredict(u, n)
+            cv.circle(img, (int(xPred/self.pixelsToMeters) + width//2, -(int(yPred/self.pixelsToMeters) - height//2)), 3, GREEN, 2)
+
+            # Correct
+            (xEst, yEst) = self.kalmanUpdate([[self.centers[str(n+1)][0]], [self.centers[str(n+1)][1]]], n)
+            cv.circle(img, (int(xEst/self.pixelsToMeters) + width//2, -(int(yEst/self.pixelsToMeters) - height//2)), 3, BLUE, 2)
+        return img
 
     # Function for sending data to ESP32 (by TCP)
     def send_to_esp32(self, message : str) -> None:
@@ -207,13 +289,13 @@ class control:
         vel2 = np.dot(-np.array([[np.cos(self.theta2), np.sin(self.theta2)], [-np.sin(self.theta2), np.cos(self.theta2)]]), mag*dir2)
 
         # Robot 1
-        [vx1, vy1, w1, self.x1, self.y1, self.theta1] = self.control(self.x1, self.y1, self.theta1, xd1, yd1, self.thetav, dt, False, vel1)
+        # [self.vx1, self.vy1, w1, x1, y1, theta1] = self.control(self.x1, self.y1, self.theta1, xd1, yd1, self.thetav, dt, False, vel1)
 
         # Robot 2
-        [vx2, vy2, w2, self.x2, self.y2, self.theta2] = self.control(self.x2, self.y2, self.theta2, xd2, yd2, self.thetav, dt, False, vel2)
+        # [self.vx2, self.vy2, w2, x2, y2, theta2] = self.control(self.x2, self.y2, self.theta2, xd2, yd2, self.thetav, dt, False, vel2)
 
         # Prepare message with velocities for sending to ESP32
-        data = f'{vx1:.3f},{vy1:.3f},{w1:.3f}|{vx2:.3f},{vy2:.3f},{w2:.3f}\n'
+        # data = f'{self.vx1:.3f},{self.vy1:.3f},{w1:.3f}|{self.vx2:.3f},{self.vy2:.3f},{w2:.3f}\n'
         # self.send_to_esp32(data)
 
     def simulation(self) -> None:
@@ -258,7 +340,7 @@ class control:
         self.cap.release() # Camera
         cv.destroyAllWindows() # OpenCV figures
         self.s.close() # TCP connection
-        pygame.quit() # Close simulation
+        pygame.quit() # Simulation
         exit() # Code execution
 
 if __name__ == '__main__':
@@ -277,13 +359,13 @@ if __name__ == '__main__':
                 dt = time.time() - currTime
             else:
                 # Control (Manual start)
-                # while not classObject.start:
-                #     classObject.camera() # Start camera for calibrating
-                #     if cv.waitKey(1) == ord('q'):
-                #         # Wait for 'q' key, (manual activation)
-                #         classObject.start = True
-                #     time.sleep(0.02)
-                #     os.system('cls')
+                while not classObject.start:
+                    classObject.camera() # Start camera for calibrating
+                    if cv.waitKey(1) == ord('q'):
+                        # Wait for 'q' key, (manual activation)
+                        classObject.startKalmanFilter(1, 0.01, 0.05, dt)
+                        classObject.start = True
+                    time.sleep(0.02)
 
                 # Start control
                 classObject.camera()
@@ -293,7 +375,6 @@ if __name__ == '__main__':
                     # Esc key for finish
                     break
             time.sleep(0.02)
-            os.system('cls') # Clear console
         # Manage exceptions
         except ValueError:
             print(ValueError)
