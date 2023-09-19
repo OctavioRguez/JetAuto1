@@ -1,5 +1,6 @@
 #!/usr/bin/python
 import socket
+import os
 import time
 import numpy as np
 import copy
@@ -9,8 +10,8 @@ from pupil_apriltags import Detector
 import pygame
 
 # Window Dimensions
-WINDOW_WIDTH = 960
-WINDOW_HEIGHT = 540
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 720
 
 # Colors
 WHITE = (255, 255, 255)
@@ -22,7 +23,7 @@ class control:
     def __init__(self) -> None:
         # Declare socket for TCP client connection
         self.s = socket.socket()
-        # self.s.connect(('192.168.149.77', 80))
+        self.s.connect(('192.168.149.77', 80))
 
         # Variables for camera position feedback
         self.start = False
@@ -31,24 +32,19 @@ class control:
         self.angles = {"1":0.0, "2":0.0, "3":0.0}
 
         # Robot 1, Robot 2 and Virtual leader states
-        self.x1, self.y1, self.theta1 = 3.0, 0.0, 0.0
-        self.x2, self.y2, self.theta2 = 1.0, 0.0, 0.0
-        self.xv, self.yv, self.thetav = 2.0, 0.0, 0.0
-
-        self.vx1, self.vy1 = 0.0, 0.0
-        self.vx2, self.vy2 = 0.0, 0.0
-        self.vx1Past, self.vy1Past = 0.0, 0.0
-        self.vx2Past, self.vy2Past = 0.0, 0.0
+        self.x1, self.y1, self.theta1 = 0.0, 0.0, 0.0
+        self.x2, self.y2, self.theta2 = 0.0, 0.0, 0.0
+        self.xv, self.yv, self.thetav = 0.0, 0.0, 0.0
         self.pixelsToMeters = 1
 
         # Control constants
         self.kp = {"kx":0.5, "ky":0.5, "kr":0.5}
-        self.k = 1
-        self.vmax, self.wmax = 0.3, 0.3
+        self.k = 0.1
+        self.vmax, self.wmax = 0.1, 0.2
 
         # Desired states (references)
-        self.d_d = 0.5
-        self.xd, self.yd, self.thetad = -5, 4, np.pi/2
+        self.d_d = 0.3
+        self.xd, self.yd, self.thetad = 0.0, 0.0, np.pi/2
 
         # Flag for start the simulation
         self.simulate = False
@@ -58,7 +54,7 @@ class control:
     def camera_parameters(self) -> None:
         # Camera and detection parameters
         parser = argparse.ArgumentParser()
-        parser.add_argument("--device", type=int, default=0)
+        parser.add_argument("--device", type=int, default=1)
         parser.add_argument("--width", help='cap width', type=int, default=WINDOW_WIDTH)
         parser.add_argument("--height", help='cap height', type=int, default=WINDOW_HEIGHT)
         parser.add_argument("--families", type=str, default='tag36h11')
@@ -111,9 +107,11 @@ class control:
             corner1, corner2 = (int(corners[0][0]), int(corners[0][1])), (int(corners[1][0]), int(corners[1][1]))
             CA, CO = corner2[0]-corner1[0], corner1[1]-corner2[1] # Catetos
             angulo = np.arctan2(CO, CA)
+            
+            # Conversion from pixels to meters (according to the tag size)
+            self.pixelsToMeters = 20.0 / (100*np.sqrt(CA**2 + CO**2))
 
             # Save states feedback from current tag
-            self.pixelsToMeters = 5.5 / (100*np.sqrt(CA**2 + CO**2))
             self.centers[str(id)] = [self.pixelsToMeters*(center[0] - width//2), -self.pixelsToMeters*(center[1] - height//2)]
             self.angles[str(id)] = angulo
             cv.circle(debug_image, (center[0], center[1]), 3, RED, 2) # Center
@@ -124,18 +122,16 @@ class control:
             cv.putText(debug_image, f"Theta = {angulo:.3f}", (center[0]+10, center[1]-15), 
                        cv.FONT_HERSHEY_SIMPLEX, 0.5, BLUE, 2, cv.LINE_AA) # Angle
 
-        # Control states feedback 
-        self.vx1, self.vy1 = self.x1-self.centers["1"][0], self.y1-self.centers["1"][1]
-        self.x1, self.y1, self.theta1 = self.centers["1"][0], self.centers["1"][1], self.angles["1"] # Robot 1
+        # Control states feedback
+        self.x1, self.y1, self.theta1 = self.centers["1"][0], self.centers["1"][1], self.angles["1"] # Robot 1 states
         debug_image = self.applyKalman(0, width, height, debug_image) # Filter for robot 1
 
-        self.vx2, self.vy2 = self.x2-self.centers["2"][0], self.y2-self.centers["2"][1]
-        self.x2, self.y2, self.theta2 = self.centers["2"][0], self.centers["2"][1], self.angles["2"] # Robot 2
+        self.x2, self.y2, self.theta2 = self.centers["2"][0], self.centers["2"][1], self.angles["2"] # Robot 2 states
         debug_image = self.applyKalman(1, width, height, debug_image) # Filter for robot 2
 
-        # self.xd, self.yd, self.thetad = self.centers["3"][0], self.centers["3"][1], self.angles["3"] # Desired position
-        # if not self.start:
-        #     self.xv, self.yv = (self.x1 + self.x2)/2, (self.y1 + self.y2)/2 # Virtual lider
+        # self.xd, self.yd, self.thetad = self.centers["3"][0], self.centers["3"][1], self.angles["3"] # Desired states
+        if not self.start:
+            self.xv, self.yv = (self.x1 + self.x2)/2, (self.y1 + self.y2)/2 # Virtual lider initial position
         cv.imshow("Camera", debug_image) # Display frame
 
     # Function for initialize variables used for the Kalman Filter
@@ -220,13 +216,15 @@ class control:
         self.s.sendall(data)
 
     # Function for controlling the current states according to desired states
-    def control(self, x : float, y : float, theta : float, xd : float, yd : float, thetad : float, dt : float, virtual : bool, addVel) -> list[float]:
+    def control(self, x : float, y : float, theta : float, xd : float, yd : float, thetad : float, dt : float, virtual : bool) -> list[float]:
         # Increase lineal velocity for followers (for being able to keep up)
-        if (not virtual and (abs(x - xd) > 0.2 or abs(y - yd) > 0.2)):
-            vmax = self.vmax * 3
-            kx = self.kp["kx"] * 3
-            ky = self.kp["ky"] * 3
+        if (not virtual and (abs(x - xd) > 0.3 or abs(y - yd) > 0.3)):
+            # Increased constants when the error is to big
+            vmax = self.vmax * 1.2
+            kx = self.kp["kx"] * 1.5
+            ky = self.kp["ky"] * 1.5
         else:
+            # Normal constants
             vmax = self.vmax
             kx = self.kp["kx"]
             ky = self.kp["ky"]
@@ -239,7 +237,7 @@ class control:
         # Saturate linear control
         if np.linalg.norm(Vec) > vmax:
             Vec = Vec*vmax/np.linalg.norm(Vec)
-        [vx, vy] = Vec + addVel
+        [vx, vy] = Vec
 
         # Angular control
         thetae = theta-thetad
@@ -251,13 +249,13 @@ class control:
         
         # Increase angular velocity for followers
         if (not virtual and abs(thetae) > np.pi/6):
-            wmax = self.wmax * 2
-            kr = self.kp["kr"] * 2
+            wmax = self.wmax * 1.2
+            kr = self.kp["kr"] * 1.5
         else:
             wmax = self.wmax
             kr = self.kp["kr"]
         # Saturate angular control with sigmoid
-        w = wmax*np.tanh(-kr*thetae/wmax)
+        w = wmax*np.tanh(-kr*thetae/wmax) if abs(thetae) > 0.05 else 0.0
 
         # Get velocities on inertial frame
         xp = vx*np.cos(theta) - vy*np.sin(theta)
@@ -274,30 +272,33 @@ class control:
     # Function for integrating all the calculations for the physical robots and virtual leader
     def startControl(self, dt : float) -> None:
         # Virtual leader
-        [vx, vy, w, self.xv, self.yv, self.thetav] = self.control(self.xv, self.yv, self.thetav, self.xd, self.yd, self.thetad, dt, True, np.array([0, 0]))
+        [vx, vy, w, self.xv, self.yv, self.thetav] = self.control(self.xv, self.yv, self.thetav, self.xd, self.yd, self.thetad, dt, True)
 
         # Get desired positions for the physical robots according to virtual leader
-        xd1, yd1 = self.xv + self.d_d*np.cos(self.thetav), self.yv + self.d_d*np.sin(self.thetav)
-        xd2, yd2 = self.xv + self.d_d*np.cos(np.pi + self.thetav), self.yv + self.d_d*np.sin(np.pi + self.thetav)
+        xd1, yd1 = self.xv + self.d_d*np.cos(self.thetav - np.pi/2), self.yv + self.d_d*np.sin(self.thetav - np.pi/2)
+        xd2, yd2 = self.xv + self.d_d*np.cos(self.thetav + np.pi/2), self.yv + self.d_d*np.sin(self.thetav + np.pi/2)
 
         # Control for avoiding colisions between the 2 robots
         dist = np.sqrt((self.x1-self.x2)**2 + (self.y1-self.y2)**2)
-        mag = self.k*(dist-2*self.d_d)
+        mag = self.k*(dist-(2*self.d_d))
         dir1 = np.array([self.x1-self.x2,self.y1-self.y2])/dist
         dir2 = np.array([self.x2-self.x1,self.y2-self.y1])/dist
         vel1 = np.dot(-np.array([[np.cos(self.theta1), np.sin(self.theta1)], [-np.sin(self.theta1), np.cos(self.theta1)]]), mag*dir1)
         vel2 = np.dot(-np.array([[np.cos(self.theta2), np.sin(self.theta2)], [-np.sin(self.theta2), np.cos(self.theta2)]]), mag*dir2)
 
         # Robot 1
-        # [self.vx1, self.vy1, w1, x1, y1, theta1] = self.control(self.x1, self.y1, self.theta1, xd1, yd1, self.thetav, dt, False, vel1)
+        [self.vx1, self.vy1, w1, x1, y1, theta1] = self.control(self.x1, self.y1, self.theta1, xd1, yd1, self.thetav, dt, False)
+        [self.vx1, self.vy1] = [self.vx1, self.vy1] + vel1 # Add velocity to avoid colision with robot 2
 
         # Robot 2
-        # [self.vx2, self.vy2, w2, x2, y2, theta2] = self.control(self.x2, self.y2, self.theta2, xd2, yd2, self.thetav, dt, False, vel2)
+        [self.vx2, self.vy2, w2, x2, y2, theta2] = self.control(self.x2, self.y2, self.theta2, xd2, yd2, self.thetav, dt, False)
+        [self.vx2, self.vy2] = [self.vx2, self.vy2] + vel2 # Add velocity to avoid colision with robot 1
 
         # Prepare message with velocities for sending to ESP32
-        # data = f'{self.vx1:.3f},{self.vy1:.3f},{w1:.3f}|{self.vx2:.3f},{self.vy2:.3f},{w2:.3f}\n'
-        # self.send_to_esp32(data)
+        data = f'{self.vx1:.3f},{self.vy1:.3f},{w1:.3f}|{self.vx2:.3f},{self.vy2:.3f},{w2:.3f}\n'
+        self.send_to_esp32(data)
 
+    # Function for showing the simulation for the vehicles
     def simulation(self) -> None:
         if not self.simulate:
             pygame.init() # Initiate the service
@@ -363,18 +364,19 @@ if __name__ == '__main__':
                     classObject.camera() # Start camera for calibrating
                     if cv.waitKey(1) == ord('q'):
                         # Wait for 'q' key, (manual activation)
-                        classObject.startKalmanFilter(1, 0.01, 0.05, dt)
+                        # classObject.startKalmanFilter(1, 0.01, 0.05, dt)
                         classObject.start = True
+                    os.system('cls')
                     time.sleep(0.02)
 
                 # Start control
                 classObject.camera()
-                # classObject.startControl(dt)
+                classObject.startControl(dt)
                 # classObject.simulation()
                 if cv.waitKey(1) == 27:
-                    # Esc key for finish
-                    break
-            time.sleep(0.02)
+                    break # Esc key for finish
+            os.system('cls')
+            time.sleep(0.12) # Delay
         # Manage exceptions
         except ValueError:
             print(ValueError)

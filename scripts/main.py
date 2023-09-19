@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python
 import socket
 import rospy
 from geometry_msgs.msg import Twist
@@ -17,13 +17,12 @@ def receive_from_wifi_esp32():
     while True:
         data = client.recv(32).decode('utf-8') # Decode received data
         data = data.replace('\r', '').replace('\n', '') # Clean data
-        if data: 
+        if data:
             velocity = [float(val) for val in data.split(',')] # Get velocities list as floats
-        else: 
-            break # No more data
-
-    client.close() # End current client connection
-    return velocity
+            client.close() # End current client connection
+            return velocity
+        else:
+            return [0.0, 0.0, 0.0]
 
 # Stop Condition
 def stop():
