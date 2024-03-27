@@ -138,7 +138,7 @@ class control:
         self.s.sendall(data)
 
     # Function for controlling the current states according to desired states
-    def control(self, x : float, y : float, theta : float, xd : float, yd : float, thetad : float, dt : float, virtual : bool, addVel) -> list[float]:
+    def control(self, x : float, y : float, theta : float, xd : float, yd : float, thetad : float, dt : float, virtual : bool, addVel) -> list:
         # Increase lineal velocity for followers (for being able to keep up)
         if (not virtual and (abs(x - xd) > 0.2 or abs(y - yd) > 0.2)):
             vmax = self.vmax * 3
