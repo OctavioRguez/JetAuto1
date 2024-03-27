@@ -31,7 +31,7 @@ To activate the control, navigate to the directory containing the project files 
     python control.py
 ```
 
-For getting the data (position feedback for the controller) from and external device, you can modify the python script saved in `scripts/main.py` and then execute it by creating a ROS project:
+For getting the data (position feedback for the controller) from and external device, you can modify the python script [`main.py`](scripts/main.py) and then execute it by creating a ROS project:
 ```bash
     cd ~/catkin_ws/src
     git clone https://github.com/OctavioRguez/JetAuto1.git
@@ -43,6 +43,9 @@ For getting the data (position feedback for the controller) from and external de
     ./launchControl.sh
 ```
 
+## Demo
+https://github.com/OctavioRguez/JetAuto1/assets/115122414/ee6ad2b3-3633-488b-823d-67bb2f5f7690
+
 ## License
 
-This project is licensed under the BSD 3-Clause License. See the LICENSE file for details.
+This project is licensed under the BSD 3-Clause License. See the [LICENSE](LICENSE) file for details.
